@@ -115,7 +115,8 @@ Docker はコンテナに GPU を渡せないため、RViz はソフトウェア
 <http://localhost:6080/vnc.html?autoconnect=1&resize=remote> で見られます。
 動作は確認済みですが、そのぶん CPU を使い、会話が遅くなります。
 
-RViz の表示はこのような見え方になります（実測 約10fps）。
+RViz の見え方はこのようになります（RViz ウィンドウのうち 3D 表示の部分を切り出したもの）。
+手をふったあと、首を振ったりおじぎをしたりしています。
 
 ![RVizの表示](docs/rviz.gif)
 
