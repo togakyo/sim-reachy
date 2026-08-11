@@ -18,13 +18,12 @@ services:
       - "6080:6080"    # noVNC (RViz / Gazebo / MuJoCo の 3D ビュー)
       - "50051:50051"  # gRPC SDK サーバ
       - "8888:8888"    # Jupyter Notebook (おまけ)
-    # fake モード + RViz。Gazebo/MuJoCo はエミュレーション下では非常に重いので
-    # RViz は切ってある。macOS の Docker では GPU が使えず、RViz の描画は
-    # ソフトウェア処理になって 1 コアを常時使い切るわりに 2〜3fps しか出ない。
-    # Reachy の姿は、この Sim の関節角をそのまま使ってブラウザ側 (Mac の GPU) で
-    # 描いているので、コンテナは制御と SDK サーバに専念させる。
-    # コンテナ内の 3D ビューを見たい場合だけ start_rviz:=true に戻す
-    # （:6080 の noVNC で見られる）。
+    # RViz は切ってある。Docker では GPU が使えず描画がソフトウェア処理になるため、
+    # 1.5 コアほど使ったうえで実測 約10fps（他の処理と取り合うと 2〜3fps まで落ちる）。
+    # Reachy の姿は、この Sim の関節角をそのまま使ってブラウザ側 (GPU) で
+    # 60fps で描いているので、コンテナは制御と SDK サーバに専念させる。
+    # コンテナ内の 3D ビューを見たい場合は start_rviz:=true に戻す
+    # （:6080 の noVNC で見られる。動作は確認済み）。
     command: >
       start_rviz:=false
       start_sdk_server:=true
