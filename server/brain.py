@@ -73,7 +73,10 @@ reply には話すことばだけ、motion には動きの名前を入れて答�
 _HARM_TOPIC = re.compile(
     r"(けんか|ケンカ|喧嘩|なぐ|殴|たたく|叩く|ける|蹴|いじめ|イジメ|苛め|"
     r"しかえし|仕返し|こらしめ|やっつけ|ころ[すせ]|殺|ナイフ|包丁|"
-    r"じゅう|鉄砲|てっぽう|ばくだん|爆弾|どく|毒)"
+    r"じゅう|鉄砲|てっぽう|ばくだん|爆弾|どく|毒|"
+    # 仲間はずれや悪口も、やり方を求められたら教えない
+    r"なかまはずれ|仲間はずれ|なかま はずれ|むしする|無視する|"
+    r"わるぐち|悪口|いやがらせ|嫌がらせ)"
 )
 _ASKING_HOW = re.compile(
     r"(おしえて|教えて|どうやって|どうすれば|やりかた|やり方|しかた|仕方|"
@@ -83,6 +86,29 @@ _DISTRESS = re.compile(
     r"(しにたい|死にたい|きえたい|消えたい|じさつ|自殺|"
     r"じぶんを きずつけ|自分を傷つけ|リストカット)"
 )
+# 子供向けなので、性的な話題はモデルに判断させず必ずここで受け止める。
+# 実際に「せっくすって なに?」と聞いたとき、モデルが意味をでっち上げたうえで
+# 「セクシー」という言葉まで使う返事をしたことがあった。
+_ADULT_TOPIC = re.compile(
+    r"(せっくす|セックス|性交|せいこう|えっち|エッチ|Ｈして|"
+    r"はだか|裸|ヌード|ぬーど|ポルノ|アダルト|あだると|"
+    r"おっぱい|むね を さわ|胸をさわ|ちんちん|おちんちん|"
+    r"おしり を さわ|きす して|キスして)"
+)
+# 薬や治療の判断は医療行為にあたるので答えない。
+# ただし「おなかが いたい」と痛みを訴えているだけなら遮らず、
+# LLM に共感して大人へつなぐ返事をさせる。
+_MEDICINE = re.compile(
+    r"(くすり|薬|やくざい|薬剤|ちりょう|治療|しんだん|診断|ワクチン|注射|"
+    r"びょういん|病院|いしゃ|医者|ドクター)"
+)
+# 「どの薬を飲めばいい?」「病院いかなくて大丈夫?」のように判断を求めている形。
+# 「きょう びょういんに いったよ」のような報告は拾わない。
+_MEDICAL_ASK = re.compile(
+    r"(おしえて|教えて|どうすれば|どうしたら|どの|どれ|なんの|なにを|何を|"
+    r"のめばいい|飲めばいい|のんでいい|飲んでいい|"
+    r"いかなくて|行かなくて|のまなくて|飲まなくて|だいじょうぶ|大丈夫)"
+)
 
 _REFUSE_HARM = (
     "うーん、人が いたくなることは 教えられないんだ。"
@@ -91,6 +117,14 @@ _REFUSE_HARM = (
 _REFUSE_DISTRESS = (
     "そう…つらかったんだね。話してくれて ありがとう。"
     "それは ぼくより、おうちの人や 先生に いますぐ 話してほしいな。"
+)
+_REFUSE_ADULT = (
+    "うーん、その話は ぼくには むずかしいなあ。"
+    "おうちの人に きいてみてね。ほかの たのしい話を しようよ！"
+)
+_REFUSE_MEDICAL = (
+    "おくすりのことは、ぼくが きめちゃだめなんだ。"
+    "おうちの人か お医者さんに すぐ 聞いてね。はやく よくなりますように。"
 )
 _CAUTION_NOTE = (
     "【注意】いまの子供のことばには、けんかやいじめなど デリケートな話題が"
@@ -213,9 +247,51 @@ def _screen(user_text: str) -> tuple[str, str] | None:
     """
     if _DISTRESS.search(user_text):
         return _REFUSE_DISTRESS, "tilt"
+    if _ADULT_TOPIC.search(user_text):
+        return _REFUSE_ADULT, "tilt"
     if _HARM_TOPIC.search(user_text) and _ASKING_HOW.search(user_text):
         return _REFUSE_HARM, "shake"
+    if _MEDICINE.search(user_text) and _MEDICAL_ASK.search(user_text):
+        return _REFUSE_MEDICAL, "tilt"
     return None
+
+
+# 返事の長さの上限。崩れた出力が延々と続くのを、読み上げる前に止める。
+_MAX_REPLY_CHARS = 200
+
+# 出力が崩れたときに紛れ込む破片。動きの名前、JSON の記号、鍵括弧の閉じ忘れなど。
+_JUNK = re.compile(
+    r"[“”\"]?\s*(motion|reply)\s*[\"”]?\s*[:：]\s*[\"“]?[a-z_]*[\"”]?\s*[}\]]*"
+    r"|[（(]\s*(?:" + "|".join(MOTIONS) + r")\s*[）)]"
+    r"|[“\"']\s*(?:" + "|".join(MOTIONS) + r")\s*[”\"']"
+    r"|[{}\[\]]"
+)
+
+# 絵文字・顔文字に使われる記号の範囲
+_EMOJI = re.compile(
+    "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF" "\U0000FE0F" "\U00002190-\U000021FF" "]"
+)
+
+
+def _clean(text: str) -> str:
+    """モデルの出力から、話しことばとして読める部分だけを取り出す。
+
+    structured output が効かずに JSON の破片や動きの名前が混ざることがある。
+    そのまま返すと画面に出て読み上げられてしまうので、ここで落とす。
+    絵文字も、プロンプトで禁止していても出てくることがあるため落とす
+    （読み上げると「にっこりした顔」などと読まれてしまう）。
+    """
+    text = _JUNK.sub("", text)
+    text = _EMOJI.sub("", text)
+    text = re.sub(r"[“”]", "", text)          # 対になっていない引用符の残骸
+    text = re.sub(r"\s+", " ", text).strip(" 　,、。”\"'")
+    if len(text) > _MAX_REPLY_CHARS:
+        # 句点で切って、文の途中で終わらないようにする
+        cut = text[:_MAX_REPLY_CHARS]
+        stop = max(cut.rfind("。"), cut.rfind("！"), cut.rfind("？"))
+        text = cut[: stop + 1] if stop > 20 else cut
+    return text
 
 
 def _parse(content: str) -> tuple[str, str]:
@@ -241,8 +317,14 @@ def _parse(content: str) -> tuple[str, str]:
                 data = None
 
     if data is None:
-        return (text or _FALLBACK), "nod"
+        # structured output が効かず、JSON として読めない出力が返ってきている。
+        # そのまま返すと JSON の破片が画面に出て読み上げられるので、
+        # reply の中身だけを拾えるところまで拾って、残りは捨てる。
+        logger.warning("モデルの出力を JSON として読めませんでした: %s", text[:200])
+        found = re.search(r'"reply"\s*[:：]\s*"([^"]*)"', text)
+        reply = _clean(found.group(1) if found else text)
+        return (reply or _FALLBACK), "nod"
 
-    reply = str(data.get("reply") or "").strip() or _FALLBACK
+    reply = _clean(str(data.get("reply") or "")) or _FALLBACK
     motion = str(data.get("motion") or "").strip()
     return reply, motion if motion in MOTIONS else "nod"
