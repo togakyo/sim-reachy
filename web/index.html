@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>リーチーと おしゃべり</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🤖</text></svg>">
+<style>
+  :root {
+    --bg: #fff7ed;
+    --card: #ffffff;
+    --ink: #2b2118;
+    --muted: #8a7a6b;
+    --robot: #ffd8a8;
+    --robot-ink: #7c4a15;
+    --kid: #a5d8ff;
+    --kid-ink: #10437a;
+    --accent: #ff6b6b;
+    --accent-dark: #e03131;
+    --ok: #40c057;
+    --off: #ced4da;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Hiragino Maru Gothic ProN", "ヒラギノ丸ゴ ProN", "Hiragino Sans", sans-serif;
+    font-size: 20px;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ------------------------------------------------------------ ヘッダ */
+  header {
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--card);
+    border-bottom: 3px solid #ffe8cc;
+    flex: none;
+  }
+  .face {
+    width: 52px; height: 52px; flex: none;
+    border-radius: 50%;
+    background: var(--robot);
+    display: grid; place-items: center;
+    font-size: 28px;
+    transition: transform .25s ease;
+  }
+  .face.busy { animation: bob .8s ease-in-out infinite; }
+  @keyframes bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
+  h1 { font-size: 22px; margin: 0; }
+  .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .lights { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+  .light { display: flex; align-items: center; gap: 5px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--off); }
+  .dot.on { background: var(--ok); }
+
+  /* --------------------------------------------------------- 3Dビュー */
+  #stage {
+    flex: none;
+    height: 38vh;
+    min-height: 200px;
+    position: relative;
+    background: linear-gradient(#fffdf9, #ffe8cc);
+    border-bottom: 3px solid #ffe8cc;
+  }
+  #stage canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  #stage canvas:active { cursor: grabbing; }
+  #stageHint {
+    position: absolute; left: 12px; bottom: 8px;
+    font-size: 12px; color: var(--muted); pointer-events: none;
+  }
+  #stageWarn {
+    position: absolute; right: 12px; top: 10px;
+    font-size: 12px; color: #8c6d1f; background: #fff3bf;
+    padding: 4px 10px; border-radius: 999px;
+  }
+  #stageWarn:empty { display: none; }
+
+  /* ------------------------------------------------------------- 会話 */
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 16px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  /* 画面が低いときは 3D を小さくして、会話が読めるほうを優先する */
+  @media (max-height: 640px) { #stage { height: 30vh; min-height: 150px; } }
+  .row { display: flex; gap: 10px; align-items: flex-end; max-width: 90%; }
+  .row.kid { align-self: flex-end; flex-direction: row-reverse; }
+  .avatar { font-size: 30px; flex: none; }
+  .bubble {
+    padding: 13px 18px;
+    border-radius: 22px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .row.robot .bubble { background: var(--robot); color: var(--robot-ink); border-bottom-left-radius: 6px; }
+  .row.kid   .bubble { background: var(--kid);   color: var(--kid-ink);   border-bottom-right-radius: 6px; }
+  .motion { font-size: 13px; opacity: .75; margin-top: 5px; }
+  .dots span {
+    display: inline-block; width: 9px; height: 9px; margin: 0 2px;
+    background: var(--robot-ink); border-radius: 50%; opacity: .4;
+    animation: blink 1.2s infinite;
+  }
+  .dots span:nth-child(2) { animation-delay: .2s }
+  .dots span:nth-child(3) { animation-delay: .4s }
+  @keyframes blink { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
+
+  /* ------------------------------------------------------------- 操作 */
+  footer {
+    flex: none;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: var(--card);
+    border-top: 3px solid #ffe8cc;
+  }
+  .tabs { display: flex; gap: 8px; justify-content: center; margin-bottom: 12px; }
+  .tab {
+    border: 3px solid transparent; background: #f1f3f5; color: var(--muted);
+    border-radius: 999px; padding: 7px 22px; font: inherit; font-size: 17px; cursor: pointer;
+  }
+  .tab[aria-selected="true"] { background: #fff4e6; border-color: var(--accent); color: var(--accent-dark); }
+
+  /* パネルの表示は .show だけで決める。#id 側で display を持たせると
+     詳細度で .panel の display:none に勝ってしまい、両方出てしまう。 */
+  .panel { display: none; }
+  #voice.show { display: block; }
+  #text.show { display: flex; }
+
+  /* 音声パネル */
+  #voice { text-align: center; }
+  #mic {
+    width: 118px; height: 118px; border-radius: 50%;
+    border: none; background: var(--accent); color: #fff;
+    font-size: 46px; cursor: pointer;
+    box-shadow: 0 6px 0 var(--accent-dark);
+    transition: transform .1s;
+  }
+  #mic:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--accent-dark); }
+  #mic[disabled] { background: var(--off); box-shadow: 0 6px 0 #adb5bd; cursor: not-allowed; }
+  #mic.recording { background: var(--ok); box-shadow: 0 6px 0 #2f9e44; animation: pulse 1.1s infinite; }
+  @keyframes pulse { 0%,100% { transform: scale(1) } 50% { transform: scale(1.07) } }
+  #micLabel { margin-top: 9px; font-size: 17px; color: var(--muted); min-height: 1.5em; }
+
+  /* もじパネル */
+  #text { gap: 10px; }
+  #say {
+    flex: 1; font: inherit; padding: 14px 18px; border-radius: 999px;
+    border: 3px solid #ffe8cc; background: #fffaf3; color: var(--ink);
+  }
+  #say:focus { outline: none; border-color: var(--accent); }
+  #send {
+    border: none; background: var(--accent); color: #fff; font: inherit; font-size: 19px;
+    border-radius: 999px; padding: 0 26px; cursor: pointer; box-shadow: 0 4px 0 var(--accent-dark);
+  }
+  #send:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--accent-dark); }
+  #send[disabled] { background: var(--off); box-shadow: 0 4px 0 #adb5bd; }
+
+  .tools { display: flex; justify-content: center; gap: 16px; margin-top: 12px; font-size: 13px; }
+  .tools button { background: none; border: none; color: var(--muted); font: inherit; cursor: pointer; text-decoration: underline; }
+  .notice {
+    margin: 0 16px 10px; padding: 10px 14px; border-radius: 14px;
+    background: #fff3bf; color: #8c6d1f; font-size: 15px; line-height: 1.5;
+  }
+  .notice:empty { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="face" id="face">🤖</div>
+  <div>
+    <h1>リーチーと おしゃべり</h1>
+    <div class="sub" id="doing">まってるよ</div>
+  </div>
+  <div class="lights">
+    <div class="light"><span class="dot" id="dotRobot"></span>ロボット</div>
+    <div class="light"><span class="dot" id="dotLlm"></span>あたま</div>
+  </div>
+</header>
+
+<div id="stage">
+  <canvas id="view"></canvas>
+  <div id="stageHint">よこに ドラッグすると まわせるよ</div>
+  <div id="stageWarn"></div>
+</div>
+
+<div class="notice" id="notice"></div>
+<div id="log"></div>
+
+<footer>
+  <div class="tabs" role="tablist">
+    <button class="tab" id="tabVoice" role="tab" aria-selected="true">🎤 こえ</button>
+    <button class="tab" id="tabText"  role="tab" aria-selected="false">⌨️ もじ</button>
+  </div>
+
+  <div class="panel show" id="voice">
+    <button id="mic">🎤</button>
+    <div id="micLabel">ボタンを おして はなしてね</div>
+  </div>
+
+  <div class="panel" id="text">
+    <input id="say" placeholder="ここに かいてね" autocomplete="off">
+    <button id="send">おくる</button>
+  </div>
+
+  <div class="tools">
+    <button id="reset">さいしょから</button>
+    <button id="mute">🔊 こえ あり</button>
+    <button id="reconnect">ロボットに つなぐ</button>
+  </div>
+</footer>
+
+<script type="module">
+import { createReachy } from "/static/reachy3d.js";
+
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const log = $("log"), face = $("face"), doing = $("doing"), notice = $("notice");
+
+  let ws = null;
+  // /api/status が返るまでのつなぎ。あいさつを状態取得より先に出すため、
+  // そこで使う動きの名前だけ手元に持っておく（届いたら丸ごと差し替わる）。
+  let motions = { wave: "手をふる" };
+  let sttMode = "browser";     // "local" = Mac の Whisper / "browser" = ブラウザの音声認識
+  let speakEnabled = true;
+  let busy = false;            // 返事まち。二重送信を防ぐ
+  let audio = null;            // 再生中の読み上げ
+
+  // ------------------------------------------------------------ 会話の表示
+
+  function bubble(who, text, motion) {
+    const row = document.createElement("div");
+    row.className = "row " + who;
+    row.innerHTML =
+      `<div class="avatar">${who === "robot" ? "🤖" : "🧒"}</div><div class="bubble"></div>`;
+    const b = row.querySelector(".bubble");
+    b.textContent = text;
+    if (motion && motions[motion] && motion !== "idle") {
+      const m = document.createElement("div");
+      m.className = "motion";
+      m.textContent = "（" + motions[motion] + "）";
+      b.appendChild(m);
+    }
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  let thinkingRow = null;
+  function showThinking() {
+    if (thinkingRow) return;
+    thinkingRow = bubble("robot", "");
+    thinkingRow.querySelector(".bubble").innerHTML =
+      '<span class="dots"><span></span><span></span><span></span></span>';
+    log.scrollTop = log.scrollHeight;
+  }
+  function clearThinking() {
+    if (thinkingRow) { thinkingRow.remove(); thinkingRow = null; }
+  }
+
+  function setBusy(on, label) {
+    busy = on;
+    face.classList.toggle("busy", on);
+    doing.textContent = label || (on ? "かんがえてるよ" : "まってるよ");
+    $("send").disabled = on;
+    $("mic").disabled = on || (sttMode === "browser" && !browserSTT);
+  }
+
+  // ------------------------------------------------------------ 読み上げ
+
+  async function speak(text) {
+    if (!speakEnabled || !text) return;
+    stopSpeaking();
+    try {
+      // サーバ側 (macOS の say) で合成した音声。ネットには出ない。
+      audio = new Audio("/api/tts?text=" + encodeURIComponent(text));
+      await audio.play();
+    } catch (e) {
+      // 自動再生がブロックされた場合はブラウザ内蔵の読み上げにフォールバック
+      try {
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = "ja-JP"; u.rate = 0.95;
+        speechSynthesis.speak(u);
+      } catch (_) { /* 読み上げなしで続行 */ }
+    }
+  }
+  function stopSpeaking() {
+    if (audio) { audio.pause(); audio = null; }
+    try { speechSynthesis.cancel(); } catch (_) {}
+  }
+
+  // ------------------------------------------------------- 3D の Reachy
+
+  const wsBase = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+  const reachy3d = createReachy($("view"));
+
+  function connectPose() {
+    const ps = new WebSocket(wsBase + "/ws/pose");
+    ps.onmessage = (ev) => {
+      const pose = JSON.parse(ev.data);
+      const live = pose && Object.keys(pose).length > 0;
+      reachy3d.setPose(pose);
+      $("stageWarn").textContent = live ? "" : "Sim に つながっていません";
+      $("dotRobot").classList.toggle("on", live);
+    };
+    // 一時的に切れても勝手に戻ってくるようにしておく
+    ps.onclose = () => setTimeout(connectPose, 2000);
+  }
+
+  // ------------------------------------------------------------ WebSocket
+
+  function connectWS() {
+    ws = new WebSocket(wsBase + "/ws");
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "thinking") { showThinking(); return; }
+      if (msg.type === "reply") {
+        clearThinking();
+        bubble("robot", msg.text, msg.motion);
+        speak(msg.text);
+        setBusy(false);
+      }
+    };
+    ws.onclose = () => {
+      setBusy(false);
+      notice.textContent = "サーバとの つながりが きれました。ページを よみこみなおしてね。";
+    };
+  }
+
+  function send(text) {
+    text = (text || "").trim();
+    if (!text || busy || !ws || ws.readyState !== WebSocket.OPEN) return;
+    stopSpeaking();
+    bubble("kid", text);
+    ws.send(JSON.stringify({ text }));
+    setBusy(true);
+  }
+
+  // ------------------------------------------------------- 音声入力(ローカル)
+
+  let recorder = null, chunks = [], stream = null, silenceTimer = null, audioCtx = null;
+
+  async function startLocalRecording() {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    chunks = [];
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    recorder.onstop = onLocalRecordingStop;
+    recorder.start();
+    watchSilence(stream);
+  }
+
+  // 1.6 秒しゃべらなかったら自動で止める。子供が停止ボタンを押し忘れても進むように。
+  function watchSilence(stream) {
+    audioCtx = new AudioContext();
+    const src = audioCtx.createMediaStreamSource(stream);
+    const an = audioCtx.createAnalyser();
+    an.fftSize = 512;
+    src.connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    let quietSince = null;
+    let spoke = false;
+    const tick = () => {
+      if (!recorder || recorder.state !== "recording") return;
+      an.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      if (peak > 8) { spoke = true; quietSince = null; }
+      else if (spoke) {
+        quietSince = quietSince ?? performance.now();
+        if (performance.now() - quietSince > 1600) { stopLocalRecording(); return; }
+      }
+      silenceTimer = requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  function stopLocalRecording() {
+    if (silenceTimer) { cancelAnimationFrame(silenceTimer); silenceTimer = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    if (recorder && recorder.state === "recording") recorder.stop();
+  }
+
+  async function onLocalRecordingStop() {
+    stream.getTracks().forEach((t) => t.stop());
+    setMic(false);
+    const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+    recorder = null;
+    if (blob.size < 1200) { $("micLabel").textContent = "きこえなかったよ。もういちど どうぞ"; return; }
+
+    $("micLabel").textContent = "きいているよ…";
+    setBusy(true, "きいているよ");
+    try {
+      const fd = new FormData();
+      fd.append("audio", blob, "speech.webm");
+      const res = await fetch("/api/stt", { method: "POST", body: fd });
+      const data = await res.json();
+      setBusy(false);
+      if (data.text) { $("micLabel").textContent = "ボタンを おして はなしてね"; send(data.text); }
+      else { $("micLabel").textContent = "うまく きこえなかったよ。もういちど どうぞ"; }
+    } catch (e) {
+      setBusy(false);
+      $("micLabel").textContent = "こえが おくれなかったよ";
+    }
+  }
+
+  // ---------------------------------------------------- 音声入力(ブラウザ)
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const browserSTT = !!SR;
+  let recognition = null;
+
+  function startBrowserRecognition() {
+    recognition = new SR();
+    recognition.lang = "ja-JP";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = (e) => {
+      const text = e.results[0][0].transcript;
+      $("micLabel").textContent = "ボタンを おして はなしてね";
+      send(text);
+    };
+    recognition.onerror = () => { $("micLabel").textContent = "うまく きこえなかったよ。もういちど どうぞ"; };
+    recognition.onend = () => { setMic(false); recognition = null; };
+    recognition.start();
+  }
+
+  // ------------------------------------------------------------- マイク操作
+
+  let recording = false;
+  function setMic(on) {
+    recording = on;
+    $("mic").classList.toggle("recording", on);
+    $("mic").textContent = on ? "⏹" : "🎤";
+    if (on) $("micLabel").textContent = "はなしてね…（おわったら もういちど おす）";
+  }
+
+  $("mic").onclick = async () => {
+    if (recording) {
+      if (sttMode === "local") stopLocalRecording();
+      else if (recognition) recognition.stop();
+      return;
+    }
+    stopSpeaking();
+    try {
+      setMic(true);
+      if (sttMode === "local") await startLocalRecording();
+      else startBrowserRecognition();
+    } catch (e) {
+      setMic(false);
+      $("micLabel").textContent = "マイクを つかえませんでした";
+    }
+  };
+
+  // ------------------------------------------------------------ そのほかUI
+
+  $("send").onclick = () => { send($("say").value); $("say").value = ""; };
+  $("say").onkeydown = (e) => { if (e.key === "Enter") $("send").click(); };
+
+  function selectTab(voice) {
+    $("tabVoice").setAttribute("aria-selected", String(voice));
+    $("tabText").setAttribute("aria-selected", String(!voice));
+    $("voice").classList.toggle("show", voice);
+    $("text").classList.toggle("show", !voice);
+    if (!voice) $("say").focus();
+  }
+  $("tabVoice").onclick = () => selectTab(true);
+  $("tabText").onclick = () => selectTab(false);
+
+  $("mute").onclick = () => {
+    speakEnabled = !speakEnabled;
+    if (!speakEnabled) stopSpeaking();
+    $("mute").textContent = speakEnabled ? "🔊 こえ あり" : "🔇 こえ なし";
+  };
+
+  $("reset").onclick = async () => {
+    stopSpeaking();
+    await fetch("/api/reset", { method: "POST" });
+    log.innerHTML = "";
+    thinkingRow = null;
+    greeted = false;   // あいさつから やりなおす
+    boot();
+  };
+
+  $("reconnect").onclick = async () => {
+    const res = await fetch("/api/reconnect", { method: "POST" });
+    const data = await res.json();
+    $("dotRobot").classList.toggle("on", data.robot);
+    notice.textContent = data.robot ? "" : "ロボット(Sim)に つながりません。Sim が うごいているか かくにんしてね。";
+  };
+
+  // --------------------------------------------------------------- 起動
+
+  const DEFAULT_GREETING = "こんにちは！ぼくはリーチー、ロボットだよ。きょうはなにをして あそぶ？";
+
+  let greeted = false;
+  function greet(text) {
+    if (greeted) return;
+    greeted = true;
+    bubble("robot", text || DEFAULT_GREETING, "wave");
+    fetch("/api/motion/wave", { method: "POST" }).catch(() => {});
+  }
+
+  async function boot() {
+    setBusy(false);
+    // あいさつは /api/status を待たずに出す。サーバ起動直後はモデルの読み込みで
+    // 状態の返事が遅れることがあり、その間ずっと空の画面を見せることになるため。
+    greet();
+
+    let st;
+    try {
+      st = await (await fetch("/api/status")).json();
+    } catch (e) {
+      notice.textContent = "サーバに つながりません。ページを よみこみなおしてね。";
+      return;
+    }
+    motions = st.motions || {};
+    sttMode = st.stt_mode;
+    $("dotRobot").classList.toggle("on", st.robot);
+    $("dotLlm").classList.toggle("on", st.llm);
+
+    const warn = [];
+    if (!st.llm) warn.push("おはなしの あたま（" + st.model + "）が つかえません: " + st.llm_message);
+    // Sim 未接続は 3D ビューの右上に出るので、ここでは重ねて出さない
+    if (sttMode === "browser" && !browserSTT) warn.push("このブラウザは こえの にゅうりょくに たいおうしていません。「もじ」で おはなししてね。");
+    notice.textContent = warn.join(" / ");
+    setBusy(false);
+  }
+
+  connectWS();
+  connectPose();
+  boot();
+})();
+</script>
+</body>
+</html>

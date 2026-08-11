@@ -1,0 +1,6 @@
+reachy2-sdk==1.0.15
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+httpx==0.28.1
+python-multipart==0.0.32
+faster-whisper==1.2.1

@@ -1,0 +1,47 @@
+# Reachy 2 シミュレータ (Pollen Robotics 公式イメージ)
+#
+# 公式イメージは linux/amd64 のみ提供されているため、Apple Silicon では
+# Rosetta エミュレーションで動きます。事前に Docker Desktop の
+#   Settings > General > "Use Rosetta for x86/amd64 emulation on Apple Silicon"
+# を有効にしてください。
+#
+#   起動:  docker compose -f sim/compose.yaml up
+#   3D表示: http://localhost:6080/vnc.html?autoconnect=1&resize=remote
+#   SDK   : localhost:50051 (gRPC)
+
+services:
+  reachy2:
+    image: docker.io/pollenrobotics/reachy2:1.7.5.9
+    platform: linux/amd64
+    container_name: reachy2-sim
+    ports:
+      - "6080:6080"    # noVNC (RViz / Gazebo / MuJoCo の 3D ビュー)
+      - "50051:50051"  # gRPC SDK サーバ
+      - "8888:8888"    # Jupyter Notebook (おまけ)
+    # fake モード + RViz。Gazebo/MuJoCo はエミュレーション下では非常に重いので
+    # RViz は切ってある。macOS の Docker では GPU が使えず、RViz の描画は
+    # ソフトウェア処理になって 1 コアを常時使い切るわりに 2〜3fps しか出ない。
+    # Reachy の姿は、この Sim の関節角をそのまま使ってブラウザ側 (Mac の GPU) で
+    # 描いているので、コンテナは制御と SDK サーバに専念させる。
+    # コンテナ内の 3D ビューを見たい場合だけ start_rviz:=true に戻す
+    # （:6080 の noVNC で見られる）。
+    command: >
+      start_rviz:=false
+      start_sdk_server:=true
+      fake:=true
+      orbbec:=false
+    shm_size: "2gb"
+    stop_grace_period: 10s
+    # Rosetta 上の ROS 2 制御ループは放っておくと 10 コアぶん(1000%超)を回しきり、
+    # 同じ Mac で動く Ollama が CPU を取れずに返事が数十秒かかるようになる。
+    # Sim に 4 コアまでと決めて、残りを会話（LLM・音声認識）に空けておく。
+    #
+    # この制限は「返事の速さ」を「RViz の描画のなめらかさ」より優先した結果。
+    # 実測 (M5/24GB, 動作を流しながら VNC の更新量を測定):
+    #   cpus=4.0 → 3D 更新  27k px/秒 / LLM 応答  4.2 秒
+    #   cpus=8.0 → 3D 更新  82k px/秒 / LLM 応答 12.0 秒
+    #   無制限   → 3D 更新 265k px/秒 / LLM 応答 11.9 秒
+    # なお macOS の Docker では GPU が使えず RViz はソフトウェア描画になるため、
+    # 制限を外しても 2〜3 fps 止まり。なめらかな 3D が必要なら RViz ではなく
+    # ブラウザ側での描画を検討すること。
+    cpus: "4.0"

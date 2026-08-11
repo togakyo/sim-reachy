@@ -1,0 +1,242 @@
+/**
+ * 子供向けにデフォルメした Reachy を three.js で描く。
+ *
+ * かたちは簡略化しているが、動きは本物のシミュレータの関節角そのもの。
+ * サーバの /ws/pose から届く角度（度）を、そのままこのモデルに割り当てている。
+ *
+ * コンテナの中の RViz は macOS の Docker で GPU が使えず 2〜3fps しか出ないので、
+ * 描画だけをブラウザ（Mac の GPU）に移して 60fps を出すのがこのファイルの役目。
+ */
+import * as THREE from "./vendor/three.module.min.js";
+
+const D2R = Math.PI / 180;
+
+const COLORS = {
+  body: 0xf1f3f5,
+  bodyDark: 0xced4da,
+  stripe: 0x343a40,
+  visor: 0x212529,
+  eye: 0x4dd4ff,
+  antenna: 0xff922b,
+  base: 0xadb5bd,
+};
+
+// Sim から角度が来ていないときに見せる姿勢（Reachy の default posture に合わせる）
+const REST = {
+  neck_roll: 0, neck_pitch: -10, neck_yaw: 0,
+  l_antenna: 0, r_antenna: 0,
+  r_shoulder_pitch: 0, r_shoulder_roll: 10, r_elbow_pitch: 0, r_elbow_yaw: -10,
+  l_shoulder_pitch: 0, l_shoulder_roll: -10, l_elbow_pitch: 0, l_elbow_yaw: 10,
+};
+
+function material(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.05, ...opts });
+}
+
+/** ひとつの腕（肩→上腕→肘→前腕→手）を組み立てる。side: +1 が Reachy の左。 */
+function buildArm(side) {
+  const shoulder = new THREE.Group();
+  shoulder.position.set(side * 0.42, 0.62, 0);
+
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.15, 24, 16), material(COLORS.bodyDark));
+  shoulder.add(ball);
+
+  const upper = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.1, 0.42, 8, 16), material(COLORS.body));
+  upper.position.y = -0.31;
+  shoulder.add(upper);
+
+  // 肘から先は別グループにして、前腕だけを曲げられるようにする
+  const elbow = new THREE.Group();
+  elbow.position.y = -0.56;
+  shoulder.add(elbow);
+
+  const elbowBall = new THREE.Mesh(
+    new THREE.SphereGeometry(0.115, 20, 14), material(COLORS.bodyDark));
+  elbow.add(elbowBall);
+
+  const fore = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.085, 0.38, 8, 16), material(COLORS.body));
+  fore.position.y = -0.29;
+  elbow.add(fore);
+
+  const hand = new THREE.Mesh(
+    new THREE.SphereGeometry(0.115, 20, 14), material(COLORS.antenna));
+  hand.position.y = -0.54;
+  elbow.add(hand);
+
+  return { shoulder, elbow };
+}
+
+function buildAntenna(side) {
+  const group = new THREE.Group();
+  group.position.set(side * 0.17, 0.3, 0);
+
+  const rod = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.016, 0.016, 0.34, 10), material(COLORS.bodyDark));
+  rod.position.y = 0.17;
+  group.add(rod);
+
+  const tip = new THREE.Mesh(
+    new THREE.SphereGeometry(0.06, 18, 12),
+    material(COLORS.antenna, { emissive: 0x662200, emissiveIntensity: 0.5 }));
+  tip.position.y = 0.36;
+  group.add(tip);
+  return group;
+}
+
+function buildHead() {
+  const head = new THREE.Group();
+  head.position.y = 1.02;
+
+  const shell = new THREE.Mesh(
+    new THREE.BoxGeometry(0.62, 0.5, 0.5), material(COLORS.body));
+  head.add(shell);
+
+  // 顔（バイザー）は少し前に出して、目が埋まらないようにする
+  const visor = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.26, 0.06),
+    material(COLORS.visor, { roughness: 0.3 }));
+  visor.position.set(0, 0.02, 0.26);
+  head.add(visor);
+
+  for (const x of [-0.11, 0.11]) {
+    const eye = new THREE.Mesh(
+      new THREE.SphereGeometry(0.062, 20, 14),
+      new THREE.MeshStandardMaterial({
+        color: COLORS.eye, emissive: COLORS.eye, emissiveIntensity: 0.9, roughness: 0.2,
+      }));
+    eye.position.set(x, 0.02, 0.29);
+    eye.scale.z = 0.5;
+    head.add(eye);
+  }
+
+  const left = buildAntenna(1), right = buildAntenna(-1);
+  head.add(left, right);
+  return { head, leftAntenna: left, rightAntenna: right };
+}
+
+function buildBody() {
+  const body = new THREE.Group();
+
+  const base = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.52, 0.58, 0.24, 32), material(COLORS.base));
+  base.position.y = -0.72;
+  body.add(base);
+
+  const post = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.12, 0.62, 16), material(COLORS.bodyDark));
+  post.position.y = -0.3;
+  body.add(post);
+
+  const torso = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.3, 0.42, 10, 24), material(COLORS.body));
+  torso.position.y = 0.35;
+  torso.scale.z = 0.72;
+  body.add(torso);
+
+  // 首。これがないと頭が胴から浮いて見える
+  const neck = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.11, 0.2, 16), material(COLORS.bodyDark));
+  neck.position.y = 0.8;
+  body.add(neck);
+
+  // 実機のボーダー柄をイメージした帯
+  for (let i = 0; i < 3; i++) {
+    const stripe = new THREE.Mesh(
+      new THREE.TorusGeometry(0.29, 0.028, 8, 28), material(COLORS.stripe));
+    stripe.rotation.x = Math.PI / 2;
+    stripe.position.y = 0.2 + i * 0.14;
+    stripe.scale.z = 0.72;
+    body.add(stripe);
+  }
+  return body;
+}
+
+export function createReachy(canvas) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+
+  const root = new THREE.Group();
+  scene.add(root);
+
+  const body = buildBody();
+  const { head, leftAntenna, rightAntenna } = buildHead();
+  const rArm = buildArm(-1);   // Reachy の右腕は画面の左側
+  const lArm = buildArm(1);
+  root.add(body, head, rArm.shoulder, lArm.shoulder);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x9a7b5a, 2.0));
+  const key = new THREE.DirectionalLight(0xffffff, 1.5);
+  key.position.set(2, 4, 3);
+  scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffd8a8, 0.6);
+  fill.position.set(-3, 1, 2);
+  scene.add(fill);
+
+  // 目標角度と表示角度を分けて、届いた値へなめらかに追いつかせる
+  const target = { ...REST };
+  const shown = { ...REST };
+
+  let azimuth = 0, dragging = false, lastX = 0;
+  canvas.style.touchAction = "none";
+  canvas.addEventListener("pointerdown", (e) => {
+    dragging = true; lastX = e.clientX; canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    azimuth = Math.max(-1.2, Math.min(1.2, azimuth + (e.clientX - lastX) * 0.008));
+    lastX = e.clientX;
+  });
+  const endDrag = () => { dragging = false; };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+
+  function resize() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    if (canvas.width !== w * renderer.getPixelRatio() || camera.aspect !== w / h) {
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+  }
+
+  let t = 0;
+  function frame() {
+    requestAnimationFrame(frame);
+    resize();
+    t += 0.016;
+
+    // 1 フレームあたり 18% ずつ近づける。30Hz の更新でもカクつかない。
+    for (const k in target) shown[k] += (target[k] - shown[k]) * 0.18;
+
+    head.rotation.set(shown.neck_pitch * D2R, shown.neck_yaw * D2R, shown.neck_roll * D2R);
+    leftAntenna.rotation.z = -shown.l_antenna * D2R;
+    rightAntenna.rotation.z = -shown.r_antenna * D2R;
+
+    rArm.shoulder.rotation.set(shown.r_shoulder_pitch * D2R, 0, shown.r_shoulder_roll * D2R);
+    rArm.elbow.rotation.set(shown.r_elbow_pitch * D2R, shown.r_elbow_yaw * D2R, 0);
+    lArm.shoulder.rotation.set(shown.l_shoulder_pitch * D2R, 0, shown.l_shoulder_roll * D2R);
+    lArm.elbow.rotation.set(shown.l_elbow_pitch * D2R, shown.l_elbow_yaw * D2R, 0);
+
+    // ほんの少し上下させて、止まっていても「生きている」感じにする
+    root.position.y = Math.sin(t * 1.6) * 0.012;
+
+    camera.position.set(Math.sin(azimuth) * 4.0, 0.75, Math.cos(azimuth) * 4.0);
+    camera.lookAt(0, 0.35, 0);
+    renderer.render(scene, camera);
+  }
+  frame();
+
+  return {
+    /** サーバから届いた関節角（度）を反映する。空なら既定の姿勢に戻す。 */
+    setPose(pose) {
+      const src = pose && Object.keys(pose).length ? pose : REST;
+      for (const k in target) if (k in src) target[k] = src[k];
+    },
+  };
+}
