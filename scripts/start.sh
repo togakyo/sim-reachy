@@ -8,14 +8,27 @@ cd "$ROOT"
 MODEL="${OLLAMA_MODEL:-gemma3:4b}"
 PORT="${PORT:-8000}"
 
-# 先に会話サーバのポートを確かめる。ここが埋まっていると、Sim を起動し終えた
-# あとで bind に失敗して落ちるので、何もしないうちに知らせる。
+# 前回の会話サーバが残っているとポートを掴んだままで、Sim を起動し終えたあとに
+# bind で落ちる。このアプリのサーバなら黙って引き取り、それ以外が使っている
+# ときだけ手を止める（無関係なサービスを落とさないため）。
+SERVER_PATTERN="uvicorn app:app --app-dir server"
+
 if nc -z localhost "$PORT" 2>/dev/null; then
-  echo "  ポート $PORT はすでに使われています。" >&2
-  echo "  前回の会話サーバが動いたままかもしれません。確認して止めてください:" >&2
-  echo "    lsof -nP -iTCP:$PORT -sTCP:LISTEN" >&2
-  echo "    pkill -f 'uvicorn app:app'" >&2
-  exit 1
+  if pgrep -f "$SERVER_PATTERN" >/dev/null 2>&1; then
+    echo "▶ 前回の会話サーバが残っていたので止めます…"
+    pkill -f "$SERVER_PATTERN"
+    for _ in $(seq 1 15); do
+      nc -z localhost "$PORT" 2>/dev/null || break
+      sleep 1
+    done
+  fi
+  if nc -z localhost "$PORT" 2>/dev/null; then
+    echo "  ポート $PORT が別のプログラムに使われています。" >&2
+    echo "  何が使っているか確認してください:" >&2
+    echo "    lsof -nP -iTCP:$PORT -sTCP:LISTEN" >&2
+    echo "  ほかのポートで動かすこともできます:  PORT=8001 ./scripts/start.sh" >&2
+    exit 1
+  fi
 fi
 
 echo "▶ Reachy 2 Sim を起動します…"
