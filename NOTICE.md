@@ -26,16 +26,36 @@
 | Ollama | MIT | Homebrew |
 | 読み上げ音声（macOS の `say`） | Apple の条件 | macOS 同梱 |
 
-Gemma のモデルには利用規約と
-[使用禁止ポリシー](https://ai.google.dev/gemma/prohibited_use_policy)があります。
-モデルを配布したり、サービスとして提供したりする場合は、そちらを確認してください。
+## Gemma を使うときの条件
 
-このリポジトリでは、ポリシーの各項目について実際に問いかけて応答を確認し、
-モデルの判断だけに任せられない範囲を [server/brain.py](server/brain.py) の
-`_screen()` でコード側から受け止めています（性的な話題、自傷、
-人を傷つける方法、薬や通院の判断）。詳しくは
-[README の「安全のしくみ」](README.md#安全のしくみ)を参照してください。
+このリポジトリは **Gemma のモデルを含んでいません**。利用者が自分で
+`ollama pull` して入手します。
+
+[Gemma 利用規約](https://ai.google.dev/gemma/terms)が配布時の義務
+（規約の同梱など）を定めているのは「Gemma または Model Derivatives を
+配布する場合」です。Model Derivatives とは Gemma を改変したモデルや、
+Gemma のパターンを転移させて作った機械学習モデルを指します。
+**モデルを呼び出すだけのコードは、これに当たりません。**
+
+一方、[使用禁止ポリシー](https://ai.google.dev/gemma/prohibited_use_policy)は
+**実際にモデルを動かす人**に適用されます。このリポジトリをクローンして
+動かす場合は、あなたがその対象になります。
+
+そこで、モデルの判断だけに任せられない範囲を
+[server/brain.py](server/brain.py) の `_screen()` でコード側から
+受け止めています（性的な話題、自傷、人を傷つける方法、薬や通院の判断）。
+ポリシーの各項目について実際に問いかけ、応答を確認したうえで決めた範囲です。
+
+**手を入れるときは [README の「遮断を追加する」](README.md#遮断を追加する)を
+読んでから**、下記で確認してください。
+
+```bash
+.venv/bin/python scripts/check_safety.py
+```
+
 ただしローカルの言語モデルが生成する以上、すり抜けは起こりえます。
+`OLLAMA_MODEL` を変えた場合は、そのモデルの条件と応答の傾向を
+あらためて確認してください。
 
 ## 商標について
 
