@@ -50,7 +50,10 @@ fi
 echo -n "▶ Sim の SDK サーバの起動を待っています"
 ready=""
 for _ in $(seq 1 120); do
-  if docker logs reachy2-sim 2>&1 | grep -q "Server started on port 50051"; then
+  # grep -q は使わない。見つけた時点で読むのをやめるため、その行のあとにログが
+  # 長く続いていると docker logs が SIGPIPE で終わり、pipefail によって
+  # 「見つからなかった」扱いになる（Sim を動かしたまま打ち直すと 4 分待たされていた）。
+  if docker logs reachy2-sim 2>&1 | grep "Server started on port 50051" >/dev/null; then
     ready=yes
     break
   fi
