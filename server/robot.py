@@ -43,8 +43,12 @@ _HEAD_NEUTRAL = (0.0, -10.0, 0.0)
 
 # ステップの書き方:
 #   ("head", roll, pitch, yaw, duration)  首を「その角度そのもの」へ動かす（絶対角）
+#   ("look", roll, pitch, yaw, duration)  首を動かし始めて、終わりを待たずに次へ進む
 #   ("ant", left, right, duration)        アンテナを動かす（絶対角）
 #   ("arm", [7関節の角度], duration)       右腕を動かす（絶対角）
+#   ("larm", [7関節の角度], duration)      左腕を動かす（絶対角）
+#   ("arms", [右7関節], [左7関節], duration) 両腕を同時に動かす（絶対角）
+#   ("grip", "r" か "l", 開き%, duration)   グリッパーを開閉する（0 で閉じる、100 で全開）
 #   ("wait", seconds)                     ポーズ
 #
 # 首は必ず絶対角で指定すること。相対回転 (rotate_by) で組むと、割り込みで
@@ -146,6 +150,8 @@ class ReachyRobot:
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._stop = threading.Event()
+        # 会話とゲームの両方から同時に呼ばれても、打ち切りと開始が混ざらないようにする
+        self._start_lock = threading.Lock()
 
     # ------------------------------------------------------------------ 接続
 
@@ -201,29 +207,49 @@ class ReachyRobot:
         再生を始められたら True、未接続や未知の動きなら False。
         """
         steps = _GESTURES.get(motion)
-        reachy = self._reachy
-        if steps is None or reachy is None or not self.connected:
+        if steps is None:
             return False
+        return self._start(motion, steps) is not None
 
-        self._cancel_current()
-        if not steps:  # idle
-            return True
+    def run(self, steps: list[tuple], name: str = "sequence") -> bool:
+        """ステップ列を再生し、終わるまで待つ。最後まで再生できたら True。
 
-        self._stop = threading.Event()
-        stop = self._stop
+        ゲームで「つかんでから持ち上げる」のように、動きの区切りごとに
+        画面へ知らせたいときに使う。play() と同じく、再生中のものがあれば
+        打ち切ってから始める。未接続のときや、途中でほかの動きに
+        割り込まれたときは False。
+        """
+        started = self._start(name, steps)
+        if started is None:
+            return False
+        worker, stop, result = started
+        worker.join()
+        return result["ok"] and not stop.is_set()
 
-        def run() -> None:
-            logger.debug("ジェスチャー %s を開始 (%d ステップ)", motion, len(steps))
-            try:
-                _ensure_on(reachy)
-                self._run_steps(reachy, steps, stop)
-                logger.debug("ジェスチャー %s を完了", motion)
-            except Exception as exc:
-                logger.warning("ジェスチャー %s の再生に失敗: %s", motion, exc)
+    def _start(self, name: str, steps: list[tuple]):
+        reachy = self._reachy
+        if reachy is None or not self.connected:
+            return None
 
-        self._worker = threading.Thread(target=run, name=f"gesture-{motion}", daemon=True)
-        self._worker.start()
-        return True
+        with self._start_lock:
+            self._cancel_current()
+            stop = threading.Event()
+            result = {"ok": False}
+
+            def run() -> None:
+                logger.debug("ジェスチャー %s を開始 (%d ステップ)", name, len(steps))
+                try:
+                    _ensure_on(reachy)
+                    self._run_steps(reachy, steps, stop)
+                    result["ok"] = True
+                    logger.debug("ジェスチャー %s を完了", name)
+                except Exception as exc:
+                    logger.warning("ジェスチャー %s の再生に失敗: %s", name, exc)
+
+            self._stop = stop
+            self._worker = threading.Thread(target=run, name=f"gesture-{name}", daemon=True)
+            self._worker.start()
+            return self._worker, stop, result
 
     def _cancel_current(self) -> None:
         """再生中のジェスチャーを止め、進行中の goto も取り消す。"""
@@ -259,11 +285,39 @@ class ReachyRobot:
                     head.r_antenna.goto(right, duration=duration, wait=True)
                 else:
                     time.sleep(duration)
+            elif kind == "look":
+                _, roll, pitch, yaw, duration = step
+                reachy.head.goto([roll, pitch, yaw], duration=duration, wait=False)
             elif kind == "arm":
                 _, positions, duration = step
                 reachy.r_arm.goto(positions, duration=duration, wait=True)
+            elif kind == "larm":
+                _, positions, duration = step
+                reachy.l_arm.goto(positions, duration=duration, wait=True)
+            elif kind == "arms":
+                _, right, left, duration = step
+                reachy.r_arm.goto(right, duration=duration, wait=False)
+                reachy.l_arm.goto(left, duration=duration, wait=True)
+            elif kind == "grip":
+                _, side, opening, duration = step
+                arm = reachy.r_arm if side == "r" else reachy.l_arm
+                if arm.gripper is not None:
+                    arm.gripper.goto(float(opening), duration=duration, wait=True, percentage=True)
             elif kind == "wait":
                 stop.wait(step[1])
+
+    def arm_joints(self, side: str) -> list[float] | None:
+        """腕の関節角（度、肩pitch・肩roll・肘yaw・肘pitch の 4 つ）。未接続なら None。"""
+        reachy = self._reachy
+        if reachy is None or not self.connected:
+            return None
+        try:
+            arm = reachy.r_arm if side == "r" else reachy.l_arm
+            return [arm.shoulder.pitch.present_position, arm.shoulder.roll.present_position,
+                    arm.elbow.yaw.present_position, arm.elbow.pitch.present_position]
+        except Exception as exc:
+            logger.debug("腕の関節角の読み取りに失敗: %s", exc)
+            return None
 
     def pose(self) -> dict[str, float] | None:
         """いまの関節角（度）をまとめて返す。ブラウザの 3D 表示用。
@@ -291,6 +345,9 @@ class ReachyRobot:
                 "l_shoulder_roll": left.shoulder.roll.present_position,
                 "l_elbow_pitch": left.elbow.pitch.present_position,
                 "l_elbow_yaw": left.elbow.yaw.present_position,
+                # グリッパーの開き具合（0〜100%）。ゲームで物をつかむ様子を見せる
+                "r_gripper": r.gripper.opening if r.gripper else 0.0,
+                "l_gripper": left.gripper.opening if left.gripper else 0.0,
             }
         except Exception as exc:
             logger.debug("関節角の読み取りに失敗: %s", exc)

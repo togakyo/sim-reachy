@@ -9,6 +9,8 @@ Reachy 2 のシミュレータを立ち上げて、子供が声または文字�
 会話・音声認識・読み上げは **すべて手元のマシンの中で完結**します。
 子供の声も話した内容も、外部のサービスには送られません。
 
+おしゃべりのほかに、リーチーにテーブルの上の物を片づけてもらう[おかたづけゲーム](docs/game.md)もあります。
+
 ```
 ブラウザ ──WebSocket──> 会話サーバ ──> Ollama (ローカル LLM)
  こえ/もじ  ↑                 │
@@ -50,6 +52,10 @@ Reachy 2 のシミュレータを立ち上げて、子供が声または文字�
 
 ブラウザは **Chrome を推奨**します（マイク録音の形式が安定しているため）。
 `localhost` なので https でなくてもマイクが使えます。
+
+## おかたづけゲーム
+
+画面右上の「おかたづけ」に切り替えると、リーチーにテーブルの上の物を片づけてもらうゲームになります。リーチーは言われたとおりにしか動かないので、あいまいなおねがいだとまちがえることがあります。遊び方としくみは[docs/game.md](docs/game.md)にまとめています。
 
 ## 準備（最初の 1 回だけ）
 
@@ -93,6 +99,10 @@ python3.12 -m venv .venv
 | [server/speech.py](server/speech.py) | 読み上げと音声認識 |
 | [web/index.html](web/index.html) | 子供向けの画面 |
 | [web/reachy3d.js](web/reachy3d.js) | ブラウザ側の 3D Reachy（three.js） |
+| [server/game.py](server/game.py) | おかたづけゲームの進行と、ことばの読み取り |
+| [server/table.py](server/table.py) | ゲームのテーブルの配置と、そこへ手を伸ばす関節角の計算 |
+| [web/table3d.js](web/table3d.js) | ゲームのテーブルと物を描く |
+| [scripts/check_game.py](scripts/check_game.py) | ゲームのしくみの確認 |
 
 ## 3D 表示について
 

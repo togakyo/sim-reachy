@@ -1,4 +1,4 @@
-"""子供が Reachy (Sim) とおしゃべりするためのサーバ。
+"""子供が Reachy (Sim) とおしゃべりしたり、おかたづけゲームをしたりするためのサーバ。
 
   ブラウザ ──WebSocket──> このサーバ ──> Ollama (ローカル LLM)
                               └────────> Reachy 2 Sim (gRPC/50051)
@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from brain import Brain
+from game import Game
 from robot import MOTIONS, ReachyRobot
 from speech import LocalSTT, synthesize, tts_available
 
@@ -37,6 +38,7 @@ POSE_HZ = 30
 
 robot = ReachyRobot(host=REACHY_HOST)
 brain = Brain()
+game = Game(robot, brain)
 stt = LocalSTT()
 
 
@@ -95,6 +97,9 @@ async def play_motion(motion: str) -> dict:
     """UI のジェスチャーボタン用。動きの確認にも使う。"""
     if motion not in MOTIONS:
         return {"ok": False, "error": "unknown motion"}
+    if game.active and motion == "wave":
+        # ゲーム中は腕をテーブルの上で構えている。手をふると構えがくずれる。
+        return {"ok": False, "error": "playing the game"}
     return {"ok": await asyncio.to_thread(robot.play, motion)}
 
 
@@ -136,6 +141,40 @@ async def pose_stream(ws: WebSocket) -> None:
         pass
     except Exception as exc:
         logger.debug("関節角の配信を終了: %s", exc)
+
+
+@app.websocket("/ws/game")
+async def game_channel(ws: WebSocket) -> None:
+    """おかたづけゲーム。子供のおねがいを受けて、腕の動きと物の置き場所を送り返す。
+
+    受け取るもの: start / leave / say(text) / next / retry / restart
+    送るもの:     world（テーブルのようす）/ say / hint / thinking / clear / done
+    """
+    await ws.accept()
+
+    async def out(msg: dict) -> None:
+        await ws.send_json(msg)
+
+    try:
+        await out({"type": "world", "world": game.world(), "cause": None})
+        while True:
+            msg = await ws.receive_json()
+            kind = msg.get("type")
+            if kind == "say":
+                text = str(msg.get("text", "")).strip()[:500]
+                if text:
+                    await game.handle(text, out)   # 終わったら handle が done を送る
+                continue
+            commands = {"start": game.start, "leave": game.leave, "next": game.next,
+                        "retry": game.retry, "restart": game.restart}
+            if kind in commands:
+                await commands[kind](out)
+                # 腕の構えやおだいの読み上げが終わったら、画面の入力を受け付け直す
+                await out({"type": "done"})
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.warning("ゲームの WebSocket でエラー: %s", exc)
 
 
 @app.websocket("/ws")
