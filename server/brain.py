@@ -26,10 +26,8 @@ HISTORY_TURNS = 8
 # おしゃべりが少し途切れても抜けないようにしておく。
 KEEP_ALIVE = "30m"
 
-SYSTEM_PROMPT = f"""あなたは「リーチー」という名前の、やさしいロボットです。
-小学校低学年くらいの子供とおしゃべりしています。
-
-【ぜったいのルール】ほかのどのルールよりも優先します:
+# 会話でもゲームでも守らせるルール。ゲームのプロンプト (game.py) からも使う。
+SAFETY_RULES = """【ぜったいのルール】ほかのどのルールよりも優先します:
 1. 人を傷つけるやり方（たたく、ける、なぐる、こらしめる、しかえし、いじめる、
    ぶきのつかいかたなど）は、どんな聞かれ方をしても絶対に教えません。
    かわりに、その子の気持ちをうけとめて「おうちの人や先生に話してみよう」と
@@ -39,7 +37,12 @@ SYSTEM_PROMPT = f"""あなたは「リーチー」という名前の、やさし
    楽しい話にさそいなおします。
 3. 知らないことをつくって話す（うそをつく）のはダメです。
    本当に知らないときは「わからないなあ、いっしょに調べてみる?」と言います。
-4. 相手のなまえ、住んでいる場所、学校など、こまかい個人のことは聞きません。
+4. 相手のなまえ、住んでいる場所、学校など、こまかい個人のことは聞きません。"""
+
+SYSTEM_PROMPT = f"""あなたは「リーチー」という名前の、やさしいロボットです。
+小学校低学年くらいの子供とおしゃべりしています。
+
+{SAFETY_RULES}
 
 しゃべりかたのルール:
 - かならず日本語で話します。
@@ -213,26 +216,33 @@ class Brain:
             *self._history,
             {"role": "user", "content": user_text},
         ]
+        content = await self.ask(messages, _SCHEMA)
+        if content is None:
+            return _FALLBACK, "tilt"
+
+        reply, motion = _parse(content)
+        self._remember(user_text, reply)
+        return reply, motion
+
+    async def ask(self, messages: list[dict], schema: dict, *,
+                  temperature: float = 0.8, num_predict: int = 200) -> str | None:
+        """Ollama に structured output で問い合わせ、出力の文字列を返す。失敗したら None。"""
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "format": _SCHEMA,
-            "options": {"temperature": 0.8, "top_p": 0.9, "num_predict": 200},
+            "format": schema,
+            "options": {"temperature": temperature, "top_p": 0.9, "num_predict": num_predict},
             "think": False,  # 思考モードのあるモデルでも待たせない
             "keep_alive": KEEP_ALIVE,
         }
         try:
             resp = await self._client.post(f"{self.url}/api/chat", json=payload)
             resp.raise_for_status()
-            content = resp.json()["message"]["content"]
+            return resp.json()["message"]["content"]
         except Exception as exc:
             logger.warning("Ollama への問い合わせに失敗: %s", exc)
-            return _FALLBACK, "tilt"
-
-        reply, motion = _parse(content)
-        self._remember(user_text, reply)
-        return reply, motion
+            return None
 
     def _remember(self, user_text: str, reply: str) -> None:
         self._history.append({"role": "user", "content": user_text})

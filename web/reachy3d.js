@@ -6,6 +6,9 @@
  *
  * コンテナの中の RViz は macOS の Docker で GPU が使えず 2〜3fps しか出ないので、
  * 描画だけをブラウザ（Mac の GPU）に移して 60fps を出すのがこのファイルの役目。
+ *
+ * 腕の寸法は server/table.py と合わせてある（ゲームで手がテーブルの物に届くように、
+ * サーバがこの寸法で逆運動学を解いている）。変えるときは両方を直すこと。
  */
 import * as THREE from "./vendor/three.module.min.js";
 
@@ -27,6 +30,16 @@ const REST = {
   l_antenna: 0, r_antenna: 0,
   r_shoulder_pitch: 0, r_shoulder_roll: 10, r_elbow_pitch: 0, r_elbow_yaw: -10,
   l_shoulder_pitch: 0, l_shoulder_roll: -10, l_elbow_pitch: 0, l_elbow_yaw: 10,
+  r_gripper: 0, l_gripper: 0,
+};
+
+// 肘から、指のあいだ（物をつかむ位置）までの長さ。server/table.py の _FORE と同じ。
+const GRASP = 0.67;
+
+// カメラの位置。ゲームではテーブルが見えるよう、上から見下ろす。
+const VIEWS = {
+  chat: { dist: 4.0, height: 0.75, look: [0, 0.35, 0] },
+  game: { dist: 2.9, height: 2.3, look: [0, 0.3, 0.45] },
 };
 
 function material(color, opts = {}) {
@@ -60,12 +73,36 @@ function buildArm(side) {
   fore.position.y = -0.29;
   elbow.add(fore);
 
-  const hand = new THREE.Mesh(
-    new THREE.SphereGeometry(0.115, 20, 14), material(COLORS.antenna));
-  hand.position.y = -0.54;
-  elbow.add(hand);
+  // 手首と、2 本指のグリッパー。指の開きは Sim のグリッパーの値で動く。
+  const palm = new THREE.Mesh(
+    new THREE.BoxGeometry(0.2, 0.08, 0.13), material(COLORS.antenna));
+  palm.position.y = -0.56;
+  elbow.add(palm);
 
-  return { shoulder, elbow };
+  const fingers = [-1, 1].map((sign) => {
+    const finger = new THREE.Mesh(
+      new THREE.BoxGeometry(0.035, 0.16, 0.07), material(COLORS.bodyDark));
+    finger.position.set(sign * 0.022, -0.68, 0);
+    finger.userData.sign = sign;
+    elbow.add(finger);
+    return finger;
+  });
+
+  // 物をつかむ位置。ゲームでは持った物をここにつける。
+  const grasp = new THREE.Object3D();
+  grasp.position.y = -GRASP;
+  elbow.add(grasp);
+
+  // 本物の腕と同じく、肘は yaw（上腕の軸まわりのひねり）→ pitch（曲げ）の順に回す。
+  elbow.rotation.order = "YXZ";
+
+  return { shoulder, elbow, fingers, grasp };
+}
+
+/** グリッパーの開き（0〜100%）を指の位置にする。75% で指がちょうど物にふれる。 */
+function setFingers(fingers, opening) {
+  const x = 0.022 + 0.1 * Math.max(0, Math.min(100, opening)) / 100;
+  for (const f of fingers) f.position.x = f.userData.sign * x;
 }
 
 function buildAntenna(side) {
@@ -180,6 +217,11 @@ export function createReachy(canvas) {
   // 目標角度と表示角度を分けて、届いた値へなめらかに追いつかせる
   const target = { ...REST };
   const shown = { ...REST };
+  let live = false;           // Sim から角度が届いているか
+
+  const view = { ...VIEWS.chat, look: [...VIEWS.chat.look] };
+  let viewName = "chat";
+  const frameHooks = [];
 
   let azimuth = 0, dragging = false, lastX = 0;
   canvas.style.touchAction = "none";
@@ -206,9 +248,12 @@ export function createReachy(canvas) {
   }
 
   let t = 0;
-  function frame() {
+  let last = performance.now();
+  function frame(now) {
     requestAnimationFrame(frame);
     resize();
+    const dt = Math.min(0.05, ((now ?? performance.now()) - last) / 1000);
+    last = now ?? performance.now();
     t += 0.016;
 
     // 1 フレームあたり 18% ずつ近づける。30Hz の更新でもカクつかない。
@@ -222,12 +267,29 @@ export function createReachy(canvas) {
     rArm.elbow.rotation.set(shown.r_elbow_pitch * D2R, shown.r_elbow_yaw * D2R, 0);
     lArm.shoulder.rotation.set(shown.l_shoulder_pitch * D2R, 0, shown.l_shoulder_roll * D2R);
     lArm.elbow.rotation.set(shown.l_elbow_pitch * D2R, shown.l_elbow_yaw * D2R, 0);
+    setFingers(rArm.fingers, shown.r_gripper);
+    setFingers(lArm.fingers, shown.l_gripper);
 
-    // ほんの少し上下させて、止まっていても「生きている」感じにする
-    root.position.y = Math.sin(t * 1.6) * 0.012;
+    // ほんの少し上下させて、止まっていても「生きている」感じにする。
+    // ゲーム中は手先がテーブルの物からずれないよう止める。
+    root.position.y = viewName === "game" ? 0 : Math.sin(t * 1.6) * 0.012;
 
-    camera.position.set(Math.sin(azimuth) * 4.0, 0.75, Math.cos(azimuth) * 4.0);
-    camera.lookAt(0, 0.35, 0);
+    // カメラは、おしゃべりとゲームで位置を変える。切り替えはなめらかに。
+    const want = VIEWS[viewName];
+    // 縦長の画面ではテーブルが左右にはみ出すので、そのぶん離れる
+    const dist = viewName === "game"
+      ? Math.max(want.dist, 1.45 / (Math.tan(19 * D2R) * camera.aspect))
+      : want.dist;
+    view.dist += (dist - view.dist) * 0.08;
+    view.height += (want.height - view.height) * 0.08;
+    for (let i = 0; i < 3; i++) view.look[i] += (want.look[i] - view.look[i]) * 0.08;
+    camera.position.set(
+      view.look[0] + Math.sin(azimuth) * view.dist,
+      view.height,
+      view.look[2] + Math.cos(azimuth) * view.dist);
+    camera.lookAt(...view.look);
+
+    for (const hook of frameHooks) hook(dt);
     renderer.render(scene, camera);
   }
   frame();
@@ -235,8 +297,18 @@ export function createReachy(canvas) {
   return {
     /** サーバから届いた関節角（度）を反映する。空なら既定の姿勢に戻す。 */
     setPose(pose) {
-      const src = pose && Object.keys(pose).length ? pose : REST;
+      live = !!(pose && Object.keys(pose).length);
+      const src = live ? pose : REST;
       for (const k in target) if (k in src) target[k] = src[k];
     },
+    /** "chat" か "game"。カメラの位置が変わる。 */
+    setView(name) { viewName = name in VIEWS ? name : "chat"; },
+    /** Sim から角度が届いているか。届いていないと腕は動かない。 */
+    isLive() { return live; },
+    /** 毎フレーム呼ぶ処理を足す（経過秒が渡る）。 */
+    onFrame(hook) { frameHooks.push(hook); },
+    scene,
+    /** 物をつかむ位置。持った物はここにつける。 */
+    hands: { r: rArm.grasp, l: lArm.grasp },
   };
 }
